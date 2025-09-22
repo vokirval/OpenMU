@@ -33,27 +33,27 @@ public class PickupItemAction
 
                 break;
             case DroppedItem droppedItem:
-            {
-                var (success, stackTarget) = await TryPickupItemAsync(player, droppedItem).ConfigureAwait(false);
-                if (success)
                 {
-                    if (stackTarget != null)
+                    var (success, stackTarget) = await TryPickupItemAsync(player, droppedItem).ConfigureAwait(false);
+                    if (success)
                     {
-                        await player.InvokeViewPlugInAsync<IItemPickUpFailedPlugIn>(p => p.ItemPickUpFailedAsync(ItemPickFailReason.ItemStacked)).ConfigureAwait(false);
-                        await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(stackTarget, false)).ConfigureAwait(false);
+                        if (stackTarget != null)
+                        {
+                            await player.InvokeViewPlugInAsync<IItemPickUpFailedPlugIn>(p => p.ItemPickUpFailedAsync(ItemPickFailReason.ItemStacked)).ConfigureAwait(false);
+                            await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(stackTarget, false)).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await player.InvokeViewPlugInAsync<IItemAppearPlugIn>(p => p.ItemAppearAsync(droppedItem.Item)).ConfigureAwait(false);
+                        }
                     }
                     else
                     {
-                        await player.InvokeViewPlugInAsync<IItemAppearPlugIn>(p => p.ItemAppearAsync(droppedItem.Item)).ConfigureAwait(false);
+                        await player.InvokeViewPlugInAsync<IItemPickUpFailedPlugIn>(p => p.ItemPickUpFailedAsync(ItemPickFailReason.General)).ConfigureAwait(false);
                     }
-                }
-                else
-                {
-                    await player.InvokeViewPlugInAsync<IItemPickUpFailedPlugIn>(p => p.ItemPickUpFailedAsync(ItemPickFailReason.General)).ConfigureAwait(false);
-                }
 
-                break;
-            }
+                    break;
+                }
 
             default:
                 await player.InvokeViewPlugInAsync<IItemPickUpFailedPlugIn>(p => p.ItemPickUpFailedAsync(ItemPickFailReason.General)).ConfigureAwait(false);
@@ -99,6 +99,21 @@ public class PickupItemAction
             return (false, null);
         }
 
+        // 1) Пытаемся сложить в существующий стек (без предварительных проверок слотов/лимитов)
+        var (stacked, stackTarget) = await droppedItem.TryPickUpByAsync(player).ConfigureAwait(false);
+        if (stacked)
+        {
+            // Сложилось — всё, выходим. Внешний код уже пошлёт ItemStacked + DurabilityChanged.
+            return (true, stackTarget);
+        }
+
+        // 2) Если не сложилось, и try сказал, что стек-цель существовал, но не удалось — выходим как fail (редко, но честно)
+        if (stackTarget is not null)
+        {
+            return (false, stackTarget);
+        }
+
+        // 3) Теперь можно проверять лимит хранения по дефиниции — он актуален ТОЛЬКО для добавления нового предмета
         if (IsLimitReached(player, droppedItem.Item.Definition))
         {
             var itemName = droppedItem.Item.Level > 0
@@ -109,21 +124,23 @@ public class PickupItemAction
             return (false, null);
         }
 
+        // 4) Проверяем место под НОВЫЙ предмет
         var slot = player.Inventory?.CheckInvSpace(droppedItem.Item);
-        if (slot < InventoryConstants.EquippableSlotsCount)
+        if (!slot.HasValue || slot.Value < InventoryConstants.LastEquippableItemSlotIndex)
         {
             return (false, null);
         }
 
-        var result = await droppedItem.TryPickUpByAsync(player).ConfigureAwait(false);
-        if (result.Success)
+        // 5) Добавляем как новый предмет (DropppedItem внутри вызовет TryPickUpAsync и сам удалит дроп)
+        var (success, _) = await droppedItem.TryPickUpByAsync(player).ConfigureAwait(false);
+        if (success)
         {
+            // ВАЖНО: вызываем OnPickedUpItemAsync ТОЛЬКО когда поднимаем как НОВЫЙ (не при стакинге)
             await player.OnPickedUpItemAsync(droppedItem).ConfigureAwait(false);
         }
 
-        return result;
+        return (success, null);
     }
-
     private static async ValueTask<bool> TryPickupMoneyAsync(Player player, DroppedMoney droppedMoney)
     {
         return CanPickup(player, droppedMoney) && await droppedMoney.TryPickUpByAsync(player).ConfigureAwait(false);

@@ -35,6 +35,36 @@ public class ItemRepairAction
             return;
         }
 
+        var def = item.Definition;
+        player.Logger.LogInformation(
+            "Repair clicked: slot={Slot}, item={Name}({Group},{Number}), qty={Qty}, maxStack(def)={Max}",
+            slot, def?.Name, def?.Group, def?.Number, item.Durability, def?.Durability);
+
+        // Внутри RepairItemAsync, сразу после получения item:
+        if (StackRules.IsStackable(item) && item.Durability > 1)
+        {
+            var inv = player.Inventory!;
+            var newItem = player.PersistenceContext.CreateNew<Item>();
+            newItem.Definition = item.Definition;
+            newItem.Level = item.Level;
+            newItem.Durability = 1;
+
+            var targetSlot = inv.CheckInvSpace(newItem);
+            if (!targetSlot.HasValue || targetSlot.Value < InventoryConstants.EquippableSlotsCount)
+            {
+                await player.InvokeViewPlugInAsync<IShowMessagePlugIn>(p => p.ShowMessageAsync("No free space to split stack.", MessageType.BlueNormal)).ConfigureAwait(false);
+                return;
+            }
+
+            item.Durability -= 1;
+            await inv.AddItemAsync((byte)targetSlot.Value, newItem).ConfigureAwait(false);
+
+            await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(item, false)).ConfigureAwait(false);
+            await player.InvokeViewPlugInAsync<IItemAppearPlugIn>(p => p.ItemAppearAsync(newItem)).ConfigureAwait(false);
+            return;
+        }
+
+        // Обычный ремонт (как было)
         if ((byte)item.Durability == item.GetMaximumDurabilityOfOnePiece())
         {
             return;
@@ -50,6 +80,9 @@ public class ItemRepairAction
             await player.InvokeViewPlugInAsync<IShowMessagePlugIn>(p => p.ShowMessageAsync("You don't have enough money to repair.", MessageType.BlueNormal)).ConfigureAwait(false);
         }
     }
+
+
+
 
     /// <summary>
     /// Repairs all equipped items.
@@ -67,6 +100,7 @@ public class ItemRepairAction
             player.Logger.LogWarning("Cheater Warning: Player tried to repair all items, without opened NPC. Character: [{0}], Account: [{1}]", player.SelectedCharacter?.Name, player.Account?.LoginName);
         }
 
+
         // TODO: Check if NPC is able to repair all items. Maybe specified by npc dialog type
         for (byte i = InventoryConstants.FirstEquippableItemSlotIndex; i <= InventoryConstants.LastEquippableItemSlotIndex; i++)
         {
@@ -80,6 +114,11 @@ public class ItemRepairAction
             if (item is null)
             {
                 continue;
+            }
+
+            if (StackRules.IsStackable(item))
+            {
+                continue; // не делаем массовый split при "Repair All"
             }
 
             if ((int)item.Durability == item.GetMaximumDurabilityOfOnePiece())

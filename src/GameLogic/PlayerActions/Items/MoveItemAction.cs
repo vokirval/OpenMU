@@ -70,18 +70,18 @@ public class MoveItemAction
                 await this.MoveNormalAsync(player, fromSlot, toSlot, toStorage, fromItemStorage!, item, toItemStorage!).ConfigureAwait(false);
                 break;
             case Movement.PartiallyStack when toItemStorage?.GetItem(toSlot) is { } targetItem:
-                await this.PartiallyStackAsync(player, item, targetItem).ConfigureAwait(false);
+                await this.PartiallyStackAsync(player, item, fromItemStorage!, targetItem).ConfigureAwait(false);
                 break;
             case Movement.CompleteStack when toItemStorage?.GetItem(toSlot) is { } targetItem:
-                await this.FullStackAsync(player, item, targetItem).ConfigureAwait(false);
+                await this.FullStackAsync(player, item, fromItemStorage!, targetItem).ConfigureAwait(false);
                 break;
             default:
                 await player.InvokeViewPlugInAsync<IItemMoveFailedPlugIn>(p => p.ItemMoveFailedAsync(item)).ConfigureAwait(false);
                 break;
         }
 
-        if (movement is not Movement.None
-            && player.GameContext.PlugInManager.GetPlugInPoint<PlugIns.IItemMovedPlugIn>() is { } itemMovedPlugIn)
+        if (movement == Movement.Normal
+          && player.GameContext.PlugInManager.GetPlugInPoint<PlugIns.IItemMovedPlugIn>() is { } itemMovedPlugIn)
         {
             await itemMovedPlugIn.ItemMovedAsync(player, item).ConfigureAwait(false);
         }
@@ -94,21 +94,51 @@ public class MoveItemAction
         }
     }
 
-    private async ValueTask FullStackAsync(Player player, Item sourceItem, Item targetItem)
+    private async ValueTask FullStackAsync(Player player, Item sourceItem, IStorage fromStorage, Item targetItem)
     {
-        targetItem.Durability += sourceItem.Durability;
+        // 1) Скажи клиенту «перемещение не удалось» — это СБРАСЫВАЕТ предмет с мышки
         await player.InvokeViewPlugInAsync<IItemMoveFailedPlugIn>(p => p.ItemMoveFailedAsync(sourceItem)).ConfigureAwait(false);
-        await player.InvokeViewPlugInAsync<Views.Inventory.IItemRemovedPlugIn>(p => p.RemoveItemAsync(sourceItem.ItemSlot)).ConfigureAwait(false);
+
+        // 2) Серверная логика стака
+        targetItem.Durability += sourceItem.Durability;
+
+        // 3) Удалить исходник из стораджа и UI
+        await fromStorage.RemoveItemAsync(sourceItem).ConfigureAwait(false);
+        await player.InvokeViewPlugInAsync<IItemRemovedPlugIn>(p => p.RemoveItemAsync(sourceItem.ItemSlot)).ConfigureAwait(false);
+
+        // 4) Обновить цель
         await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(targetItem, false)).ConfigureAwait(false);
     }
 
-    private async ValueTask PartiallyStackAsync(Player player, Item sourceItem, Item targetItem)
+    private async ValueTask PartiallyStackAsync(Player player, Item sourceItem, IStorage fromStorage, Item targetItem)
     {
-        var partialAmount = (byte)Math.Min(targetItem.Definition!.Durability - targetItem.Durability, sourceItem.Durability);
-        targetItem.Durability += partialAmount;
-        sourceItem.Durability -= partialAmount;
+        // 1) Сброс курсора
         await player.InvokeViewPlugInAsync<IItemMoveFailedPlugIn>(p => p.ItemMoveFailedAsync(sourceItem)).ConfigureAwait(false);
-        await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(sourceItem, false)).ConfigureAwait(false);
+
+        // 2) Сколько можем влить
+        var max = targetItem.Definition!.Durability;
+        var canTake = (byte)Math.Min(max - targetItem.Durability, sourceItem.Durability);
+        if (canTake == 0)
+        {
+            // Ничего не меняем (цель заполнена)
+            return;
+        }
+
+        targetItem.Durability += canTake;
+        sourceItem.Durability -= canTake;
+
+        // 3) Исходник: удалить или обновить
+        if (sourceItem.Durability == 0)
+        {
+            await fromStorage.RemoveItemAsync(sourceItem).ConfigureAwait(false);
+            await player.InvokeViewPlugInAsync<IItemRemovedPlugIn>(p => p.RemoveItemAsync(sourceItem.ItemSlot)).ConfigureAwait(false);
+        }
+        else
+        {
+            await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(sourceItem, false)).ConfigureAwait(false);
+        }
+
+        // 4) Обновить цель
         await player.InvokeViewPlugInAsync<IItemDurabilityChangedPlugIn>(p => p.ItemDurabilityChangedAsync(targetItem, false)).ConfigureAwait(false);
     }
 
@@ -287,13 +317,25 @@ public class MoveItemAction
                 return Movement.None;
             }
 
+            // НОВОЕ: запрещаем стеки для не-whitelist
+            if (!StackRules.IsStackable(item) || !StackRules.IsStackable(targetItem))
+            {
+                var def = item.Definition;
+                player.Logger.LogInformation("Запрещено не из вайт листа: item={Name}({Group},{Number}), qty={Qty}, maxStack(def)={Max}", def?.Name, def?.Group, def?.Number, item.Durability, def?.Durability);
+                return Movement.None;
+            }
+
             if (item.CanCompletelyStackOn(targetItem))
             {
+                var def = item.Definition;
+                player.Logger.LogInformation("Успешный стак: item={Name}({Group},{Number}), qty={Qty}, maxStack(def)={Max}", def?.Name, def?.Group, def?.Number, item.Durability, def?.Durability);
                 return Movement.CompleteStack;
             }
 
             if (item.CanPartiallyStackOn(targetItem))
             {
+                var def = item.Definition;
+                player.Logger.LogInformation("Походу стак в стак: item={Name}({Group},{Number}), qty={Qty}, maxStack(def)={Max}", def?.Name, def?.Group, def?.Number, item.Durability, def?.Durability);
                 return Movement.PartiallyStack;
             }
 
@@ -307,19 +349,20 @@ public class MoveItemAction
 
         for (var i = toStorage.StartIndex; i < toStorage.EndIndex; i++)
         {
-            if (toStorage.StartIndex == fromSlot && sameStorage)
+            if (i == fromSlot && sameStorage)
             {
-                continue; // to make sure that the same item is not blocking itself
+                continue;
             }
 
-            var blockingItem = toStorage.Storage.GetItem(toStorage.StartIndex);
+            var blockingItem = toStorage.Storage.GetItem(i);
             if (blockingItem is null)
             {
-                continue; // no item is blocking the slot
+                continue;
             }
 
             this.SetUsedSlots(toStorage, blockingItem, usedSlots);
         }
+
 
         return this.AreTargetSlotsBlocked(item, toSlot, toStorage, usedSlots) ? Movement.None : Movement.Normal;
     }

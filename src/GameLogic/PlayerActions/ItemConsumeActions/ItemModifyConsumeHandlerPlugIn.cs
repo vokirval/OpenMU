@@ -6,6 +6,8 @@
 
 namespace MUnique.OpenMU.GameLogic.PlayerActions.ItemConsumeActions;
 
+using MUnique.OpenMU.DataModel.Entities; // Item, IStorage
+using MUnique.OpenMU.GameLogic.PlayerActions.ItemConsumeActions; // StackConsumeHelpers
 using MUnique.OpenMU.GameLogic.Views.Inventory;
 using MUnique.OpenMU.Persistence;
 
@@ -46,7 +48,22 @@ public abstract class ItemModifyConsumeHandlerPlugIn : BaseConsumeHandlerPlugIn
             return false;
         }
 
-        await this.ConsumeSourceItemAsync(player, item).ConfigureAwait(false);
+        // Определяем, где лежит расходник: инвентарь или временное хранилище (например, Чаос-машина)
+        IStorage? storage = player.Inventory;
+        if (storage?.Items.Contains(item) != true)
+        {
+            storage = player.TemporaryStorage;
+        }
+
+        if (storage is null)
+        {
+            player.Logger.LogWarning("ConsumeItemAsync: storage for consumable not found. ItemSlot={Slot}", item.ItemSlot);
+        }
+        else
+        {
+            await StackConsumeHelpers.ConsumeOneFromStackAsync(player, item, storage, clearCursorFirst: true).ConfigureAwait(false);
+        }
+
 
         await player.InvokeViewPlugInAsync<IItemUpgradedPlugIn>(p => p.ItemUpgradedAsync(targetItem)).ConfigureAwait(false);
         return true;

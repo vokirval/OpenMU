@@ -53,7 +53,7 @@ public class Jewels : InitializerBase
         itemDefinition.Group = 14;
         itemDefinition.DropsFromMonsters = false;
         itemDefinition.DropLevel = 25;
-        itemDefinition.Durability = 1;
+        itemDefinition.Durability = 255;
         itemDefinition.Width = 1;
         itemDefinition.Height = 1;
         itemDefinition.Value = 150;
@@ -74,7 +74,7 @@ public class Jewels : InitializerBase
         itemDefinition.Group = 14;
         itemDefinition.DropsFromMonsters = false;
         itemDefinition.DropLevel = 30;
-        itemDefinition.Durability = 1;
+        itemDefinition.Durability = 255;
         itemDefinition.Width = 1;
         itemDefinition.Height = 1;
         itemDefinition.Value = 150;
@@ -95,7 +95,7 @@ public class Jewels : InitializerBase
         itemDefinition.Group = 12;
         itemDefinition.DropsFromMonsters = false;
         itemDefinition.DropLevel = 12;
-        itemDefinition.Durability = 1;
+        itemDefinition.Durability = 255;
         itemDefinition.Width = 1;
         itemDefinition.Height = 1;
         itemDefinition.SetGuid(itemDefinition.Group, itemDefinition.Number);
